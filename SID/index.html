@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SID to ASN.1 BASE64 Converter</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background-color: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+            color: #555;
+        }
+        input[type="text"] {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 16px;
+            box-sizing: border-box;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            padding: 12px 30px;
+            border: none;
+            border-radius: 5px;
+            font-size: 16px;
+            cursor: pointer;
+            width: 100%;
+            margin-top: 10px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        .error {
+            color: #dc3545;
+            background-color: #f8d7da;
+            border: 1px solid #f5c6cb;
+            padding: 10px;
+            border-radius: 5px;
+            margin-top: 10px;
+        }
+        .result {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: 5px;
+            border: 1px solid #dee2e6;
+        }
+        .result h3 {
+            margin-top: 0;
+            color: #495057;
+        }
+        .result-content {
+            background-color: white;
+            padding: 10px;
+            border-radius: 3px;
+            border: 1px solid #ddd;
+            font-family: monospace;
+            word-break: break-all;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>SID to ASN.1 BASE64 Converter</h1>
+        
+        <form id="sidForm">
+            <div class="form-group">
+                <label for="sidInput">Security Identifier (SID):</label>
+                <input type="text" id="sidInput" placeholder="例: S-1-5-21-3623811015-3361044348-30300820-1013" />
+            </div>
+            
+            <button type="submit">BASE64を作成する</button>
+            
+            <div id="errorMessage"></div>
+        </form>
+        
+        <div id="results"></div>
+    </div>
+
+    <script>
+        function parseSID(sidString) {
+            if (!sidString || !sidString.startsWith('S-')) {
+                throw new Error('Invalid SID format');
+            }
+            
+            const parts = sidString.substring(2).split('-');
+            if (parts.length < 3) {
+                throw new Error('Invalid SID format');
+            }
+            
+            const revision = parseInt(parts[0]);
+            const identifierAuthority = parseInt(parts[1]);
+            const subAuthorities = parts.slice(2).map(x => parseInt(x));
+            
+            return {
+                revision,
+                identifierAuthority,
+                subAuthorities
+            };
+        }
+        
+        function encodeOID(oidString) {
+            const parts = oidString.split('.').map(x => parseInt(x));
+            const bytes = [];
+            
+            bytes.push(parts[0] * 40 + parts[1]);
+            
+            for (let i = 2; i < parts.length; i++) {
+                let value = parts[i];
+                if (value < 128) {
+                    bytes.push(value);
+                } else {
+                    const temp = [];
+                    while (value > 0) {
+                        temp.unshift((value & 0x7f) | (temp.length > 0 ? 0x80 : 0));
+                        value >>= 7;
+                    }
+                    bytes.push(...temp);
+                }
+            }
+            
+            return bytes;
+        }
+        
+        function sidToASN1DER(sidString) {
+            const sid = parseSID(sidString);
+            
+            const sidBytes = [];
+            sidBytes.push(sid.revision);
+            sidBytes.push(sid.subAuthorities.length);
+            
+            const authBytes = [];
+            for (let i = 5; i >= 0; i--) {
+                authBytes.push((sid.identifierAuthority >> (i * 8)) & 0xFF);
+            }
+            sidBytes.push(...authBytes);
+            
+            for (const subAuth of sid.subAuthorities) {
+                for (let i = 0; i < 4; i++) {
+                    sidBytes.push((subAuth >> (i * 8)) & 0xFF);
+                }
+            }
+            
+            const sidOctetString = [0x04];
+            if (sidBytes.length < 128) {
+                sidOctetString.push(sidBytes.length);
+            } else if (sidBytes.length < 256) {
+                sidOctetString.push(0x81, sidBytes.length);
+            } else {
+                sidOctetString.push(0x82, (sidBytes.length >> 8) & 0xFF, sidBytes.length & 0xFF);
+            }
+            sidOctetString.push(...sidBytes);
+            
+            const oid1 = encodeOID('1.3.6.1.4.1.311.25.2');
+            const oid1Der = [0x06, oid1.length, ...oid1];
+            
+            const oid2 = encodeOID('1.3.6.1.4.1.311.25.2.1');
+            const oid2Der = [0x06, oid2.length, ...oid2];
+            
+            const innerSequence = [0x30];
+            const innerSeqContent = [...oid2Der, ...sidOctetString];
+            if (innerSeqContent.length < 128) {
+                innerSequence.push(innerSeqContent.length);
+            } else if (innerSeqContent.length < 256) {
+                innerSequence.push(0x81, innerSeqContent.length);
+            } else {
+                innerSequence.push(0x82, (innerSeqContent.length >> 8) & 0xFF, innerSeqContent.length & 0xFF);
+            }
+            innerSequence.push(...innerSeqContent);
+            
+            const optional = [0xA0];
+            if (innerSequence.length < 128) {
+                optional.push(innerSequence.length);
+            } else if (innerSequence.length < 256) {
+                optional.push(0x81, innerSequence.length);
+            } else {
+                optional.push(0x82, (innerSequence.length >> 8) & 0xFF, innerSequence.length & 0xFF);
+            }
+            optional.push(...innerSequence);
+            
+            const outerSequence = [0x30];
+            const outerSeqContent = [...oid1Der, ...optional];
+            if (outerSeqContent.length < 128) {
+                outerSequence.push(outerSeqContent.length);
+            } else if (outerSeqContent.length < 256) {
+                outerSequence.push(0x81, outerSeqContent.length);
+            } else {
+                outerSequence.push(0x82, (outerSeqContent.length >> 8) & 0xFF, outerSeqContent.length & 0xFF);
+            }
+            outerSequence.push(...outerSeqContent);
+            
+            return new Uint8Array(outerSequence);
+        }
+        
+        function toBase64(bytes) {
+            let binary = '';
+            for (let i = 0; i < bytes.length; i++) {
+                binary += String.fromCharCode(bytes[i]);
+            }
+            return btoa(binary);
+        }
+        
+        function formatASN1Text(sidString, derBytes) {
+            const sid = parseSID(sidString);
+            
+            let result = '';
+            let offset = 0;
+            
+            const formatHex = (bytes, start, len) => {
+                return Array.from(bytes.slice(start, start + len))
+                    .map(b => b.toString(16).padStart(2, '0'))
+                    .join(' ');
+            };
+            
+            result += `${offset.toString(16).padStart(2, '0')} ${formatHex(derBytes, 0, Math.min(16, derBytes.length))}\n`;
+            if (derBytes.length > 16) {
+                let pos = 16;
+                while (pos < derBytes.length) {
+                    const len = Math.min(16, derBytes.length - pos);
+                    result += `${pos.toString(16).padStart(2, '0')} ${formatHex(derBytes, pos, len)}\n`;
+                    pos += len;
+                }
+            }
+            
+            result += '\n';
+            
+            offset = 0;
+            
+            const outerSeqLen = derBytes[1];
+            result += `${offset.toString(16).padStart(2, '0')} ${formatHex(derBytes, 0, 1).padEnd(23)} ; SEQUENCE (${outerSeqLen} Bytes)\n`;
+            offset++;
+            
+            result += `${offset.toString(16).padStart(2, '0')} ${formatHex(derBytes, 1, 1).padEnd(23)} ; ${outerSeqLen} bytes\n`;
+            offset++;
+            
+            const oid1Len = derBytes[3];
+            result += `${offset.toString(16).padStart(2, '0')} ${formatHex(derBytes, 2, 1).padEnd(23)} ; OBJECT_ID (${oid1Len} Bytes)\n`;
+            offset++;
+            
+            result += `${offset.toString(16).padStart(2, '0')} ${formatHex(derBytes, 3, 1).padEnd(23)} ; ${oid1Len} bytes\n`;
+            offset++;
+            
+            result += `${offset.toString(16).padStart(2, '0')} ${formatHex(derBytes, 4, oid1Len).padEnd(23)} ; 1.3.6.1.4.1.311.25.2\n`;
+            offset += oid1Len;
+            
+            const optionalLen = derBytes[offset + 1];
+            result += `${offset.toString(16).padStart(2, '0')} ${formatHex(derBytes, offset, 1).padEnd(23)} ; OPTIONAL[0] (${optionalLen} Bytes)\n`;
+            offset++;
+            
+            result += `${offset.toString(16).padStart(2, '0')} ${formatHex(derBytes, offset, 1).padEnd(23)} ; ${optionalLen} bytes\n`;
+            offset++;
+            
+            const innerSeqLen = derBytes[offset + 1];
+            result += `${offset.toString(16).padStart(2, '0')} ${formatHex(derBytes, offset, 1).padEnd(23)} ; SEQUENCE (${innerSeqLen} Bytes)\n`;
+            offset++;
+            
+            result += `${offset.toString(16).padStart(2, '0')} ${formatHex(derBytes, offset, 1).padEnd(23)} ; ${innerSeqLen} bytes\n`;
+            offset++;
+            
+            const oid2Len = derBytes[offset + 1];
+            result += `${offset.toString(16).padStart(2, '0')} ${formatHex(derBytes, offset, 1).padEnd(23)} ; OBJECT_ID (${oid2Len} Bytes)\n`;
+            offset++;
+            
+            result += `${offset.toString(16).padStart(2, '0')} ${formatHex(derBytes, offset, 1).padEnd(23)} ; ${oid2Len} bytes\n`;
+            offset++;
+            
+            result += `${offset.toString(16).padStart(2, '0')} ${formatHex(derBytes, offset, oid2Len).padEnd(23)} ; 1.3.6.1.4.1.311.25.2.1\n`;
+            offset += oid2Len;
+            
+            const octetLen = derBytes[offset + 1];
+            result += `${offset.toString(16).padStart(2, '0')} ${formatHex(derBytes, offset, 1).padEnd(23)} ; OCTET_STRING (${octetLen} Bytes)\n`;
+            offset++;
+            
+            result += `${offset.toString(16).padStart(2, '0')} ${formatHex(derBytes, offset, 1).padEnd(23)} ; ${octetLen} bytes\n`;
+            offset++;
+            
+            result += `${offset.toString(16).padStart(2, '0')} ${formatHex(derBytes, offset, 1).padEnd(23)} ; Revision: ${sid.revision}\n`;
+            offset++;
+            
+            result += `${offset.toString(16).padStart(2, '0')} ${formatHex(derBytes, offset, 1).padEnd(23)} ; SubAuthority Count: ${sid.subAuthorities.length}\n`;
+            offset++;
+            
+            result += `${offset.toString(16).padStart(2, '0')} ${formatHex(derBytes, offset, 6).padEnd(23)} ; Identifier Authority: ${sid.identifierAuthority}\n`;
+            offset += 6;
+            
+            for (let i = 0; i < sid.subAuthorities.length; i++) {
+                result += `${offset.toString(16).padStart(2, '0')} ${formatHex(derBytes, offset, 4).padEnd(23)} ; SubAuthority[${i}]: ${sid.subAuthorities[i]}\n`;
+                offset += 4;
+            }
+            
+            result += `\n; ${sidString}`;
+            
+            return result;
+        }
+        
+        document.getElementById('sidForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            
+            const sidInput = document.getElementById('sidInput').value.trim();
+            const errorDiv = document.getElementById('errorMessage');
+            const resultsDiv = document.getElementById('results');
+            
+            errorDiv.innerHTML = '';
+            resultsDiv.innerHTML = '';
+            
+            if (!sidInput) {
+                errorDiv.innerHTML = '<div class="error">SIDを入力してください</div>';
+                return;
+            }
+            
+            try {
+                const derBytes = sidToASN1DER(sidInput);
+                const base64 = toBase64(derBytes);
+                const asn1Text = formatASN1Text(sidInput, derBytes);
+                
+                resultsDiv.innerHTML = `
+                    <div class="result">
+                        <h3>BASE64 Result:</h3>
+                        <div class="result-content">${base64}</div>
+                    </div>
+                    <div class="result">
+                        <h3>ASN.1 Text Representation:</h3>
+                        <div class="result-content">${asn1Text}</div>
+                    </div>
+                `;
+            } catch (error) {
+                errorDiv.innerHTML = `<div class="error">エラー: ${error.message}</div>`;
+            }
+        });
+    </script>
+</body>
+</html>
